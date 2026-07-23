@@ -1,42 +1,175 @@
 import os
 import logging
-import language_tool_python
+import re
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- Configuration & Setup ---
-# Load the bot token from environment variable (crucial for Railway)
+# --- Configuration ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("No TELEGRAM_BOT_TOKEN set in environment variables")
 
-# Set up logging to see what's happening
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Initialize the grammar correction tool (using LanguageTool)
-# It downloads the required language model on the first run
-logger.info("Initializing LanguageTool...")
-try:
-    # 'en-US' for American English. You can change to 'en-GB', etc.
-    tool = language_tool_python.LanguageTool('en-US')
-    logger.info("LanguageTool initialized successfully.")
-except Exception as e:
-    logger.error(f"Failed to initialize LanguageTool: {e}")
-    tool = None
+# --- Simple Grammar Checker (No heavy downloads) ---
+class SimpleGrammarChecker:
+    def __init__(self):
+        # Common grammar mistakes and corrections
+        self.common_mistakes = {
+            r'\b(a|\b)(?=\s*[aeiou])': 'an',  # 'a apple' -> 'an apple'
+            r'\b(an)(?=\s*[^aeiou])': 'a',    # 'an cat' -> 'a cat'
+            r'\b(their|there)\b': 'their',    # Basic suggestions
+            r'\b(your|you\'re)\b': 'your',
+            r'\b(its|it\'s)\b': 'its',
+            r'\b(where|were|we\'re)\b': 'where',
+        }
+        
+        # Common misspellings (simple dictionary)
+        self.spelling_corrections = {
+            'teh': 'the',
+            'adn': 'and',
+            'thier': 'their',
+            'recieve': 'receive',
+            'belive': 'believe',
+            'acheive': 'achieve',
+            'definately': 'definitely',
+            'seperate': 'separate',
+            'occured': 'occurred',
+            'occuring': 'occurring',
+            'writting': 'writing',
+            'untill': 'until',
+            'alot': 'a lot',
+            'infomation': 'information',
+            'accomodate': 'accommodate',
+            'embarass': 'embarrass',
+            'neccessary': 'necessary',
+            'priviledge': 'privilege',
+            'pubic': 'public',
+            'suprise': 'surprise',
+            'truely': 'truly',
+            'untill': 'until',
+            'usally': 'usually',
+        }
+        
+        # Common punctuation fixes
+        self.punctuation_patterns = [
+            (r'\s+\.', '.'),  # Remove space before period
+            (r'\s+,', ','),   # Remove space before comma
+            (r'\s+\?', '?'),  # Remove space before question mark
+            (r'\s+\!', '!'),  # Remove space before exclamation
+            (r'\s+\:', ':'),  # Remove space before colon
+            (r'\s+\;', ';'),  # Remove space before semicolon
+        ]
+        
+        # Contractions expansion
+        self.contractions = {
+            "don't": "do not",
+            "can't": "cannot",
+            "won't": "will not",
+            "shouldn't": "should not",
+            "wouldn't": "would not",
+            "couldn't": "could not",
+            "isn't": "is not",
+            "aren't": "are not",
+            "wasn't": "was not",
+            "weren't": "were not",
+            "haven't": "have not",
+            "hasn't": "has not",
+            "hadn't": "had not",
+            "doesn't": "does not",
+            "didn't": "did not",
+            "i'm": "i am",
+            "you're": "you are",
+            "he's": "he is",
+            "she's": "she is",
+            "it's": "it is",
+            "we're": "we are",
+            "they're": "they are",
+            "i've": "i have",
+            "you've": "you have",
+            "we've": "we have",
+            "they've": "they have",
+            "i'll": "i will",
+            "you'll": "you will",
+            "he'll": "he will",
+            "she'll": "she will",
+            "we'll": "we will",
+            "they'll": "they will",
+            "i'd": "i would",
+            "you'd": "you would",
+            "he'd": "he would",
+            "she'd": "she would",
+            "we'd": "we would",
+            "they'd": "they would",
+        }
+    
+    def correct_text(self, text):
+        """Correct grammar and spelling in the given text"""
+        if not text:
+            return text
+        
+        original = text
+        corrected = text.lower()
+        
+        # 1. Fix common spelling mistakes
+        for wrong, correct in self.spelling_corrections.items():
+            # Word boundary matching
+            pattern = r'\b' + wrong + r'\b'
+            corrected = re.sub(pattern, correct, corrected, flags=re.IGNORECASE)
+        
+        # 2. Fix article usage (a/an)
+        for pattern, replacement in self.common_mistakes.items():
+            corrected = re.sub(pattern, replacement, corrected, flags=re.IGNORECASE)
+        
+        # 3. Fix punctuation spacing
+        for pattern, replacement in self.punctuation_patterns:
+            corrected = re.sub(pattern, replacement, corrected)
+        
+        # 4. Expand common contractions (optional - makes text more formal)
+        for contraction, expansion in self.contractions.items():
+            corrected = corrected.replace(contraction, expansion)
+        
+        # 5. Capitalize first letter of sentences
+        sentences = re.split(r'([.!?])\s*', corrected)
+        corrected = ''
+        for i in range(0, len(sentences), 2):
+            if i < len(sentences):
+                sent = sentences[i]
+                if sent:
+                    sent = sent.capitalize()
+                    corrected += sent
+                if i + 1 < len(sentences):
+                    corrected += sentences[i + 1] + ' '
+        
+        # 6. Clean up extra spaces
+        corrected = re.sub(r'\s+', ' ', corrected).strip()
+        
+        # If no changes were made, return original
+        if corrected == original.lower():
+            return None
+        
+        return corrected
 
-# --- Helper Functions ---
+# Initialize the checker
+checker = SimpleGrammarChecker()
+
+# --- Bot Functions ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a welcome message and a custom keyboard when the /start command is issued."""
     user = update.effective_user
     welcome_message = (
         f"👋 Hello {user.first_name}!\n\n"
         "I'm a Grammar Correction Bot. Send me any text, and I'll try to correct its grammar and spelling.\n\n"
-        "🔧 You can also use the buttons below:"
+        "📝 I can fix:\n"
+        "• Spelling mistakes\n"
+        "• Grammar errors\n"
+        "• Punctuation\n"
+        "• Article usage (a/an)\n\n"
+        "🔧 Use the buttons below for quick actions:"
     )
-    # Create a persistent reply keyboard with helpful buttons
     keyboard = [
         [KeyboardButton("📝 Correct my last message"), KeyboardButton("ℹ️ Help")],
         [KeyboardButton("🔄 Reset")],
@@ -45,97 +178,71 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(welcome_message, reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a help message."""
     help_text = (
         "🤖 *Grammar Correction Bot Help*\n\n"
         "• Simply type or paste any text and I'll correct it.\n"
-        "• Use the buttons below for quick actions:\n"
-        "  - '📝 Correct my last message' → I'll correct the last text you sent.\n"
-        "  - 'ℹ️ Help' → Show this help message.\n"
-        "  - '🔄 Reset' → Clears the current conversation context.\n\n"
+        "• I can fix:\n"
+        "  - Common spelling mistakes\n"
+        "  - Grammar errors (a/an, contractions, etc.)\n"
+        "  - Punctuation issues\n"
+        "  - Sentence capitalization\n\n"
+        "• Use the buttons below:\n"
+        "  - '📝 Correct my last message' → Correct your previous text\n"
+        "  - 'ℹ️ Help' → Show this help\n"
+        "  - '🔄 Reset' → Clear conversation\n\n"
         "Send /start to see the menu again."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reset conversation context and clear any stored data."""
-    context.user_data.clear()  # Clear any stored data for this user
+    context.user_data.clear()
     await update.message.reply_text("🔄 Conversation reset. You can start over!")
 
 async def correct_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Core function: correct the grammar and spelling of the user's message."""
-    if tool is None:
-        await update.message.reply_text("⚠️ Sorry, the grammar correction service is currently unavailable.")
-        return
-
     user_message = update.message.text
-
-    # Check if the message is a command or from the custom keyboard
-    # We handle these in their specific handlers, but we add a safety check here.
+    
     if user_message.startswith('/'):
         return
-
-    # Wait for the correction
+    
     await update.message.chat.send_action(action="typing")
     
     try:
-        # The magic happens here! LanguageTool corrects the text.
-        matches = tool.check(user_message)
-        corrected_text = language_tool_python.utils.correct(user_message, matches)
+        corrected = checker.correct_text(user_message)
         
-        if corrected_text == user_message:
-            response = "✅ Your text looks great! No corrections needed."
+        if corrected:
+            response = f"✍️ *Corrected version:*\n\n{corrected}"
         else:
-            response = f"✍️ *Corrected version:*\n\n{corrected_text}"
+            response = "✅ Your text looks great! No corrections needed."
         
-        # Send the response
         await update.message.reply_text(response, parse_mode="Markdown")
-        # Store the user's original message in context for potential later use
         context.user_data['last_message'] = user_message
-        context.user_data['last_correction'] = corrected_text
+        context.user_data['last_correction'] = corrected
 
     except Exception as e:
         logger.error(f"Error during correction: {e}")
-        await update.message.reply_text("❌ An error occurred while correcting your text. Please try again.")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
 
 async def handle_last_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the 'Correct my last message' button."""
     last_message = context.user_data.get('last_message')
     if not last_message:
-        await update.message.reply_text("🤔 I don't have a previous message from you to correct. Please send me a text first!")
+        await update.message.reply_text("🤔 I don't have a previous message. Send me a text first!")
         return
     
-    # We'll reuse the correct_text logic by simulating a text message
     update.message.text = last_message
     await correct_text(update, context)
 
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle any other text messages not caught by other handlers."""
-    # This is a catch-all; we can also just ignore it, but we'll redirect to the main correct_text
-    # To avoid recursion, we check if the message is already handled by a command.
-    if not update.message.text.startswith('/'):
-        await correct_text(update, context)
-
 def main() -> None:
-    """Start and run the bot."""
-    # Create the Application
     application = Application.builder().token(TOKEN).build()
-
-    # Register command handlers
+    
+    # Commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("reset", reset))
     
-    # Register message handlers
-    # 1. For the 'Correct my last message' button using a filter on the text
+    # Message handlers
     application.add_handler(MessageHandler(filters.Text("📝 Correct my last message"), handle_last_message))
-    # 2. For the 'Help' button
     application.add_handler(MessageHandler(filters.Text("ℹ️ Help"), help_command))
-    # 3. For the 'Reset' button
     application.add_handler(MessageHandler(filters.Text("🔄 Reset"), reset))
-    
-    # 4. For all other text messages (the main grammar correction logic)
-    # Exclude commands and our specific button texts so they don't get caught twice.
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.Text(["📝 Correct my last message", "ℹ️ Help", "🔄 Reset"]),
@@ -143,7 +250,6 @@ def main() -> None:
         )
     )
     
-    # Start the Bot (using long polling, which is ideal for Railway)
     logger.info("Bot is starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
